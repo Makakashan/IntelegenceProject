@@ -1,3 +1,5 @@
 *.csv
 *.json
 logs/
+.ipynb_checkpoints/
+output/
