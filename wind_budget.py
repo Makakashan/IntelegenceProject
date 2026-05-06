@@ -1,4 +1,3 @@
-import os
 import re
 import sys
 import json
@@ -6,13 +5,13 @@ import time
 import logging
 import argparse
 import threading
+import requests
+import pandas as pd
+
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import date, datetime, timezone
 from pathlib import Path
 from functools import lru_cache
-
-import requests
-import pandas as pd
 
 
 SERPER_API_KEY  = "dd0415b5c6f150f16ac3b492368b25a8e47d3718"

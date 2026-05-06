@@ -1,6 +1,5 @@
 def main():
-    print("Hello from intelegenceproject!")
-
+    print("Offshore Wind LCOE Calculator")
 
 if __name__ == "__main__":
     main()
