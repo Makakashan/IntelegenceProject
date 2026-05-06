@@ -1,4 +1,3 @@
-import os
 import re
 import sys
 import json
@@ -6,20 +5,18 @@ import time
 import logging
 import argparse
 import threading
+import requests
+import pandas as pd
+
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import date, datetime, timezone
 from pathlib import Path
 from functools import lru_cache
 
-import requests
-import pandas as pd
-
-
-# Configuration
 
 SERPER_API_KEY  = "dd0415b5c6f150f16ac3b492368b25a8e47d3718"
 SERPER_URL      = "https://google.serper.dev/search"
-FRANKFURTER_URL = "https://api.frankfurter.app"          # stable; date goes in path
+FRANKFURTER_URL = "https://api.frankfurter.app"
 WORLDBANK_URL   = "https://api.worldbank.org/v2/country/{country}/indicator/FP.CPI.TOTL?format=json&per_page=200"
 
 TARGET_YEAR     = 2026
@@ -28,7 +25,7 @@ MAX_WORKERS     = 5
 REQUEST_DELAY   = 0.3
 LOG_DIR         = Path("logs")
 
-CPI_COUNTRY     = "XC"         # Eurozone aggregate in World Bank
+CPI_COUNTRY     = "XC"
 
 SYMBOL_TO_ISO = {
     "£":   "GBP",
@@ -61,7 +58,6 @@ FX_FALLBACK: dict[str, dict[int, float]] = {
     "EUR": {y: 1.0 for y in range(2000, 2027)},
 }
 
-
 LOG_DIR.mkdir(exist_ok=True)
 log_file = LOG_DIR / f"requests_{date.today().isoformat()}.jsonl"
 
@@ -83,8 +79,6 @@ log = logging.getLogger("wind")
 log.setLevel(logging.DEBUG)
 log.addHandler(_fh)
 log.addHandler(_ch)
-
-
 
 @lru_cache(maxsize=256)
 def fx_rate_for_year(currency: str, year: int) -> float:
@@ -127,9 +121,8 @@ def fx_rate_for_year(currency: str, year: int) -> float:
     return float(rate or 1.0)
 
 
-# ══════════════════════════════════════════════════════════════
-#  WORLD BANK API — CPI inflation (no API key required)
-# ══════════════════════════════════════════════════════════════
+# WORLD BANK API — CPI DATA
+
 
 @lru_cache(maxsize=1)
 def _load_eurozone_cpi() -> dict[int, float]:
@@ -152,7 +145,7 @@ def _load_eurozone_cpi() -> dict[int, float]:
                 if entry.get("value") is not None:
                     yr = int(entry["date"])
                     cpi_map[yr] = float(entry["value"])
-            if len(cpi_map) >= 5:   # sanity check — need at least a few years
+            if len(cpi_map) >= 5:
                 log.info("World Bank CPI loaded (%s): %d years (%d–%d)",
                          country, len(cpi_map), min(cpi_map), max(cpi_map))
                 _jsonl({"api": "worldbank_cpi", "country": country,
@@ -170,7 +163,6 @@ def _load_eurozone_cpi() -> dict[int, float]:
         2025:136.0, 2026:138.5,
     }
 
-
 def inflation_factor(from_year: int, to_year: int = TARGET_YEAR) -> float:
     """
     Inflation factor: how many EUR_{to_year} equals 1 EUR_{from_year}.
@@ -187,9 +179,8 @@ def inflation_factor(from_year: int, to_year: int = TARGET_YEAR) -> float:
     return cpi_to / cpi_from
 
 
-# ══════════════════════════════════════════════════════════════
-#  REGEX — budget extraction from text
-# ══════════════════════════════════════════════════════════════
+# BUDGET EXTRACTION (REGEX)
+
 
 BUDGET_PATTERNS = [
     # "total investment of £9 billion" / "total cost: $3.6bn"
@@ -208,7 +199,6 @@ YEAR_PATTERN    = re.compile(r'\b(20\d{2})\b')
 SYMBOL_PATTERN  = re.compile(r'(£|€|\$|GBP|EUR|USD|DKK|NOK|DKr|SEK)')
 UNIT_PATTERN    = re.compile(r'billion|million|bn|mn|(?<=\d)[bm]', re.I)
 
-
 def extract_budget(texts: list[str]) -> str | None:
     combined = " ".join(texts)
     for pat in BUDGET_PATTERNS:
@@ -216,7 +206,6 @@ def extract_budget(texts: list[str]) -> str | None:
         if m:
             return m.group(1).strip()
     return None
-
 
 # Tight pattern: extract only SYMBOL + NUMBER + UNIT, drop surrounding context
 _CLEAN_RAW = re.compile(
@@ -232,7 +221,6 @@ def clean_raw(raw: str) -> str:
         return raw
     m = _CLEAN_RAW.search(raw)
     return m.group().strip() if m else raw
-
 
 def extract_year(texts: list[str], fallback: int = TARGET_YEAR - 2) -> int:
     """
@@ -255,7 +243,6 @@ def extract_year(texts: list[str], fallback: int = TARGET_YEAR - 2) -> int:
     all_years = [int(y) for y in YEAR_PATTERN.findall(combined)
                  if 2005 <= int(y) <= TARGET_YEAR]
     return max(all_years) if all_years else fallback
-
 
 def parse_raw_to_eur2026(raw: str, budget_year: int) -> float | None:
     """
@@ -298,9 +285,8 @@ def parse_raw_to_eur2026(raw: str, budget_year: int) -> float | None:
     return round(eur_2026, 0)
 
 
-# ══════════════════════════════════════════════════════════════
-#  SERPER — Google Search API
-# ══════════════════════════════════════════════════════════════
+#  SERPER — GOOGLE SEARCH API
+
 
 def serper_search(query: str, api_key: str, num: int = 6) -> dict:
     headers = {"X-API-KEY": api_key, "Content-Type": "application/json"}
@@ -310,7 +296,7 @@ def serper_search(query: str, api_key: str, num: int = 6) -> dict:
         resp = requests.post(SERPER_URL, headers=headers, json=payload, timeout=12)
         elapsed = round(time.perf_counter() - t0, 3)
         if resp.status_code == 429:
-            wait = 2 ** attempt          # 1s, 2s, 4s, 8s
+            wait = 2 ** attempt
             log.debug("Serper 429 — retry in %ds (attempt %d)", wait, attempt + 1)
             time.sleep(wait)
             continue
@@ -321,8 +307,7 @@ def serper_search(query: str, api_key: str, num: int = 6) -> dict:
         return data
     # All retries exhausted — raise the last 429
     resp.raise_for_status()
-    return {}  # unreachable
-
+    return {}
 
 def get_snippets(results: dict) -> tuple[list[str], list[str]]:
     snippets, sources = [], []
@@ -340,9 +325,8 @@ def get_snippets(results: dict) -> tuple[list[str], list[str]]:
     return snippets, sources
 
 
-# ══════════════════════════════════════════════════════════════
-#  LOOKUP — single wind farm
-# ══════════════════════════════════════════════════════════════
+#  LOOKUP — SINGLE WIND FARM
+
 
 def lookup(farm_name: str) -> dict:
     result = {
@@ -421,16 +405,14 @@ def lookup(farm_name: str) -> dict:
     return result
 
 
-# ══════════════════════════════════════════════════════════════
 #  MAIN
-# ══════════════════════════════════════════════════════════════
+
 
 def run(csv_path: str, workers: int):
     # Pre-load CPI before starting threads
     log.info("Loading CPI from World Bank API...")
     _load_eurozone_cpi()
 
-    # Read CSV
     df = pd.read_csv(csv_path, encoding="utf-8-sig", on_bad_lines="warn")
     if "wind_farm_name" not in df.columns:
         sys.exit(f"Column 'wind_farm_name' not found. Available: {list(df.columns)}")
@@ -441,7 +423,6 @@ def run(csv_path: str, workers: int):
     log.info("JSONL log:  %s", log_file)
     print()
 
-    # Parallel lookup
     budget_map: dict[str, dict] = {}
     with ThreadPoolExecutor(max_workers=workers) as pool:
         futures = {pool.submit(lookup, farm): farm for farm in farms}
@@ -456,7 +437,6 @@ def run(csv_path: str, workers: int):
 
     print()
 
-    # Enrich DataFrame — build a results frame and merge (avoids key-mismatch issues)
     cols = ["wind_farm_name", "total_budget_raw", "budget_year",
             "budget_currency", "fx_rate_to_eur", "inflation_factor",
             "total_budget_EUR_2026", "source", "lookup_date"]
@@ -470,7 +450,6 @@ def run(csv_path: str, workers: int):
 
     df = df.merge(results_df, on="wind_farm_name", how="left")
 
-    # Save
     out_dir  = Path("output")
     out_dir.mkdir(exist_ok=True)
     out_csv  = out_dir / (Path(csv_path).stem + f"_enriched_{TARGET_YEAR}EUR.csv")

@@ -3,7 +3,7 @@
 A project for analyzing offshore wind farms. It includes:
 
 - `wind_budget.py` — a script that enriches the source CSV with budgets converted to EUR 2026.
-- `windAlgorythm.ipynb` — a Jupyter Notebook for LCOE calculation, charts, and mapping.
+- `windAlgorithm.ipynb` — a Jupyter Notebook for LCOE calculation, charts, and mapping.
 - `windTurbineData.csv` — the source dataset.
 
 ## Running the Notebook
@@ -14,7 +14,7 @@ This project is meant to be used through Jupyter Notebook. To open Jupyter Lab, 
 uv run --with jupyter jupyter lab
 ```
 
-Then open `windAlgorythm.ipynb`.
+Then open `windAlgorithm.ipynb`.
 
 If you want fresh data before working in the notebook, run the budget enrichment script first:
 
