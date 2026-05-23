@@ -128,6 +128,20 @@ def calculate_lcoe(row: pd.Series) -> pd.Series:
     )
 
 
+def expected_lcoe_range(row: pd.Series) -> tuple[float, float]:
+    is_float = bool(row.get("is_floating"))
+    try:
+        year = int(row.get("commissioning_year"))
+    except (TypeError, ValueError):
+        year = 2026
+
+    if is_float:
+        return 60.0, 200.0
+    if year < 2015:
+        return 50.0, 250.0
+    return 30.0, 120.0
+
+
 def validate_project(row: pd.Series) -> str:
     lcoe = row.get("LCOE_EUR_per_MWh")
     try:
@@ -135,27 +149,35 @@ def validate_project(row: pd.Series) -> str:
     except (TypeError, ValueError):
         return "No data"
 
-    is_float = bool(row.get("is_floating"))
-    try:
-        year = int(row.get("commissioning_year"))
-    except (TypeError, ValueError):
-        year = 2026
-
-    # Set thresholds
-    if is_float:
-        low, high = 60.0, 200.0
-    else:
-        # Fixed bottom
-        if year < 2015:
-            low, high = 50.0, 250.0
-        else:
-            low, high = 30.0, 120.0
+    low, high = expected_lcoe_range(row)
 
     if lcoe_val < low:
         return "Below expected"
     if lcoe_val > high:
         return "Above expected (outlier)"
     return "Valid"
+
+
+def classify_project_quality(row: pd.Series) -> str:
+    lcoe = row.get("LCOE_EUR_per_MWh")
+    try:
+        lcoe_val = float(lcoe)
+    except (TypeError, ValueError):
+        return "No data"
+
+    low, high = expected_lcoe_range(row)
+    score = (lcoe_val - low) / (high - low)
+
+    if score <= 0.20:
+        return "Good"
+    if score <= 0.40:
+        return "Above average"
+    if score <= 0.60:
+        return "Average"
+    if score <= 0.80:
+        return "Below average"
+    return "Bad"
+
 
 def load_and_analyse(csv_path: str) -> pd.DataFrame:
     df = pd.read_csv(csv_path)
@@ -188,6 +210,7 @@ def load_and_analyse(csv_path: str) -> pd.DataFrame:
     # Only rows with valid LCOE are kept for validation
     df_valid = df_model[df_model["LCOE_EUR_per_MWh"].notna()].copy()
     df_valid["validation_status"] = df_valid.apply(validate_project, axis=1)
+    df_valid["classification"] = df_valid.apply(classify_project_quality, axis=1)
 
     return df_valid
 
@@ -240,12 +263,9 @@ def classify_new_project(project_data: Dict[str, Any]) -> Dict[str, Any]:
     for key, value in lcoe_series.items():
         row[key] = value
 
-    status = validate_project(row)
-    classification = "norm" if status == "Valid" else "herrnya"
-
     result = row.to_dict()
-    result["validation_status"] = status
-    result["classification"] = classification
+    result["validation_status"] = validate_project(row)
+    result["classification"] = classify_project_quality(row)
     return result
 
 
@@ -391,7 +411,7 @@ if __name__ == "__main__":
     if not df_valid.empty:
         try:
             nearest = find_nearest_project(df_valid, new_project_data)
-            similarity_classification = "valid" if nearest.get("validation_status") == "Valid" else "invalid"
+            similarity_classification = nearest.get("classification")
         except Exception:
             nearest = None
             similarity_classification = None
