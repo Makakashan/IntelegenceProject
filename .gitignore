@@ -1,6 +1,7 @@
 *.csv
 *.json
 logs/
+input/
 output/
 .ipynb_checkpoints/
 .DS_Store
