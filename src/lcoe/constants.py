@@ -1,0 +1,98 @@
+from __future__ import annotations
+
+from pathlib import Path
+
+CF_SLOPE: float = 0.0960
+CF_INTERCEPT: float = -0.4125
+DISCOUNT_RATE: float = 0.05
+
+FLOATING_KEYWORDS = (
+    "floating",
+    "spar",
+    "semi-submersible",
+    "tlp",
+    "damping",
+    "sath",
+)
+
+PROJECT_FIELDS = (
+    "total_budget_EUR_2026",
+    "installed_capacity_MW",
+    "grid_connection_model",
+    "foundation_type",
+    "distance_from_shore_km",
+    "mean_hub_wind_speed",
+    "capacity_factor",
+    "project_lifetime_years",
+    "commissioning_year",
+    "lat",
+    "lon",
+)
+
+DEFAULT_GRID_CONNECTION_MODEL = "developer_provided"
+DEFAULT_PROJECT_LIFETIME_YEARS = 25.0
+DEFAULT_COMMISSIONING_YEAR = 2026
+DEFAULT_DATASET_CANDIDATES = (
+    Path("input") / "wind_dataset.csv",
+    Path("output") / "wind_dataset.csv",
+    Path("wind_dataset.csv"),
+)
+OUTPUT_DIR = Path("output")
+CLASSIFICATION_REPORT_PATH = OUTPUT_DIR / "classification_result.json"
+
+CAPEX_COLUMNS = ("CAPEX_total_EUR", "CAPEX_unit_EUR_per_MW")
+LCOE_COLUMNS = ("CRF", "annual_CAPEX_EUR", "LCOE_EUR_per_MWh")
+CLASSIFICATION_BANDS = (
+    (0.20, "Good"),
+    (0.40, "Above average"),
+    (0.60, "Average"),
+    (0.80, "Below average"),
+    (1.00, "Bad"),
+)
+NEAREST_PROJECT_FEATURES = (
+    "lat",
+    "lon",
+    "installed_capacity_MW",
+    "distance_from_shore_km",
+    "mean_hub_wind_speed",
+)
+
+COMPUTED_METRIC_KEYS = (
+    "CAPEX_total_EUR",
+    "CAPEX_unit_EUR_per_MW",
+    "capacity_factor_est",
+    "annual_production_MWh",
+    "OPEX_unit_kEUR_per_MW_year",
+    "annual_OPEX_total_EUR",
+    "CRF",
+    "annual_CAPEX_EUR",
+    "LCOE_EUR_per_MWh",
+)
+
+FIELD_DESCRIPTIONS = {
+    "project_parameters.total_budget_EUR_2026": "Total budget (2026, EUR)",
+    "project_parameters.installed_capacity_MW": "Installed capacity (MW)",
+    "project_parameters.grid_connection_model": "Grid connection model",
+    "project_parameters.foundation_type": "Foundation type",
+    "project_parameters.distance_from_shore_km": "Distance to shore (km)",
+    "project_parameters.mean_hub_wind_speed": "Mean wind speed (m/s)",
+    "project_parameters.capacity_factor": "Specified capacity factor",
+    "project_parameters.project_lifetime_years": "Project lifetime (years)",
+    "project_parameters.commissioning_year": "Commissioning year",
+    "project_parameters.lat": "Latitude",
+    "project_parameters.lon": "Longitude",
+    "computed_metrics.CAPEX_total_EUR": "Total capital expenditure (CAPEX), EUR",
+    "computed_metrics.CAPEX_unit_EUR_per_MW": "CAPEX per 1 MW, EUR",
+    "computed_metrics.capacity_factor_est": "Estimated capacity factor",
+    "computed_metrics.annual_production_MWh": "Annual production (MWh)",
+    "computed_metrics.OPEX_unit_kEUR_per_MW_year": "OPEX per 1 MW (kEUR/year)",
+    "computed_metrics.annual_OPEX_total_EUR": "Annual operating expenses (OPEX), EUR",
+    "computed_metrics.CRF": "Capital recovery factor (CRF)",
+    "computed_metrics.annual_CAPEX_EUR": "Annual CAPEX, EUR",
+    "computed_metrics.LCOE_EUR_per_MWh": "Levelized cost of energy (LCOE), EUR/MWh",
+    "validation.status": "Threshold status",
+    "validation.classification_algorithmic": "Algorithmic classification",
+    "validation.nearest_project_name": "Nearest project (historical)",
+    "validation.nearest_project_distance": "Distance to nearest (in normalized feature space)",
+    "validation.classification_nearest": "Nearest-project classification",
+}
