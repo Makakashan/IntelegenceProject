@@ -25,8 +25,6 @@ PROJECT_FIELDS = (
     "capacity_factor",
     "project_lifetime_years",
     "commissioning_year",
-    "lat",
-    "lon",
 )
 
 DEFAULT_GRID_CONNECTION_MODEL = "developer_provided"
@@ -39,6 +37,9 @@ DEFAULT_DATASET_CANDIDATES = (
 )
 OUTPUT_DIR = Path("output")
 CLASSIFICATION_REPORT_PATH = OUTPUT_DIR / "classification_result.json"
+CLASSIFICATION_HISTORY_DIR = OUTPUT_DIR / "classification_history"
+CLASSIFICATION_PREVIEW_PATH = OUTPUT_DIR / "classification_preview.html"
+OUTPUT_HISTORY_DIR = OUTPUT_DIR / "history"
 
 CAPEX_COLUMNS = ("CAPEX_total_EUR", "CAPEX_unit_EUR_per_MW")
 LCOE_COLUMNS = ("CRF", "annual_CAPEX_EUR", "LCOE_EUR_per_MWh")
@@ -50,11 +51,10 @@ CLASSIFICATION_BANDS = (
     (1.00, "Bad"),
 )
 NEAREST_PROJECT_FEATURES = (
-    "lat",
-    "lon",
     "installed_capacity_MW",
     "distance_from_shore_km",
     "mean_hub_wind_speed",
+    "commissioning_year",
 )
 
 COMPUTED_METRIC_KEYS = (
@@ -79,8 +79,10 @@ FIELD_DESCRIPTIONS = {
     "project_parameters.capacity_factor": "Specified capacity factor",
     "project_parameters.project_lifetime_years": "Project lifetime (years)",
     "project_parameters.commissioning_year": "Commissioning year",
-    "project_parameters.lat": "Latitude",
-    "project_parameters.lon": "Longitude",
+    "budget_estimate.estimated_total_budget_EUR_2026": "Estimated total budget (2026, EUR)",
+    "budget_estimate.method": "Budget estimate method",
+    "budget_estimate.reference_projects": "Reference projects",
+    "budget_estimate.unit_budget_EUR_per_MW": "Estimated budget per MW, EUR",
     "computed_metrics.CAPEX_total_EUR": "Total capital expenditure (CAPEX), EUR",
     "computed_metrics.CAPEX_unit_EUR_per_MW": "CAPEX per 1 MW, EUR",
     "computed_metrics.capacity_factor_est": "Estimated capacity factor",
