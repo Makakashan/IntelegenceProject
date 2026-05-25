@@ -62,6 +62,8 @@ Project classifier:
 uv run python wind_farm_classifier.py --dataset input/<name>_dataset.csv
 ```
 
+The classifier does not ask for project budget. It estimates budget/CAPEX from the historic dataset using similar projects.
+
 Notebook:
 
 ```bash
@@ -78,5 +80,8 @@ Typical outputs:
 
 - `<name>_dataset.csv` with normalized budget values;
 - JSON budget lookup details;
-- `classification_result.json` from the classifier;
+- latest classifier result in `classification_result.json`;
+- timestamped classifier history in `output/classification_history/`;
+- presentation-ready classifier preview in `classification_preview.html`;
+- timestamped preview folders in `output/history/`;
 - notebook exports such as LCOE results CSV and HTML maps.
