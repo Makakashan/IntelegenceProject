@@ -1,4 +1,4 @@
-# Offshore Wind Intelligence
+# Offshore Wind Project Assessment
 
 Python toolkit for offshore wind project analysis: budget normalization, data quality validation,
 CAPEX/OPEX/LCOE calculation, ML-based CAPEX benchmarking, mapping, and new-project classification.
