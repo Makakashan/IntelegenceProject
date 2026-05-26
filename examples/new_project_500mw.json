@@ -1,0 +1,10 @@
+{
+  "installed_capacity_MW": 500,
+  "grid_connection_model": "TSO_provided",
+  "foundation_type": "Monopile",
+  "distance_from_shore_km": 60,
+  "mean_hub_wind_speed": 9.8,
+  "capacity_factor": 0.5,
+  "project_lifetime_years": 25,
+  "commissioning_year": 2028
+}

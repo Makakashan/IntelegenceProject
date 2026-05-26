@@ -1,5 +1,4 @@
 *.csv
-*.json
 logs/
 input/
 output/
@@ -7,3 +6,4 @@ output/
 .DS_Store
 __pycache__/
 .env
+output/*.json
