@@ -7,6 +7,8 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
+from src.budget.quality import apply_budget_quality_columns
+
 from .constants import (
     CAPEX_COLUMNS,
     CF_INTERCEPT,
@@ -22,6 +24,8 @@ from .constants import (
     PROJECT_FIELDS,
 )
 from .utils import nan_metrics, read_project_csv, to_float_or_nan
+
+ACCEPTED_BUDGET_VERIFICATION_LEVELS = {"A", "B"}
 
 
 def is_floating_foundation(foundation_type: str | None) -> bool:
@@ -133,7 +137,22 @@ def validate_project(row: pd.Series) -> str:
     return "Valid"
 
 
+def classify_outlier_type(row: pd.Series) -> str:
+    if row.get("budget_quality_status") not in (None, "valid"):
+        return "Data outlier"
+    if row.get("budget_verification_level") == "C":
+        return "Model uncertainty"
+    if row.get("validation_status") == "Above expected (outlier)":
+        return "Economic outlier"
+    if row.get("validation_status") == "Below expected":
+        return "Economic outlier"
+    return "None"
+
+
 def classify_project_quality(row: pd.Series) -> str:
+    if row.get("validation_status") == "Above expected (outlier)":
+        return "Outlier"
+
     lcoe = to_float_or_nan(row.get("LCOE_EUR_per_MWh"))
     if not np.isfinite(lcoe):
         return "No data"
@@ -166,13 +185,15 @@ def classify_lcoe_by_distribution(lcoe: float, reference_lcoe: pd.Series) -> str
 
 def apply_data_driven_classification(df: pd.DataFrame) -> pd.DataFrame:
     df_result = df.copy()
-    reference_lcoe = df_result["LCOE_EUR_per_MWh"]
+    outlier_mask = df_result["validation_status"].eq("Above expected (outlier)")
+    reference_lcoe = df_result.loc[~outlier_mask, "LCOE_EUR_per_MWh"]
     if pd.to_numeric(reference_lcoe, errors="coerce").dropna().empty:
         df_result["classification"] = df_result.apply(classify_project_quality, axis=1)
         return df_result
 
     ranks = pd.to_numeric(reference_lcoe, errors="coerce").rank(pct=True, method="average")
-    df_result["classification"] = ranks.apply(classify_percentile)
+    df_result.loc[~outlier_mask, "classification"] = ranks.apply(classify_percentile)
+    df_result.loc[outlier_mask, "classification"] = "Outlier"
     return df_result
 
 
@@ -180,8 +201,14 @@ def classify_project_against_dataset(
     project_result: dict[str, Any],
     reference_df: pd.DataFrame,
 ) -> str:
+    if project_result.get("validation_status") == "Above expected (outlier)":
+        return "Outlier"
+
     if reference_df.empty or "LCOE_EUR_per_MWh" not in reference_df.columns:
         return str(project_result.get("classification", "No data"))
+
+    if "validation_status" in reference_df.columns:
+        reference_df = reference_df[reference_df["validation_status"] != "Above expected (outlier)"]
 
     label = classify_lcoe_by_distribution(
         to_float_or_nan(project_result.get("LCOE_EUR_per_MWh")),
@@ -194,6 +221,7 @@ def classify_project_against_dataset(
 
 def prepare_project_frame(df: pd.DataFrame) -> pd.DataFrame:
     df = df.copy()
+    df = apply_budget_quality_columns(df, replace_total_budget=True)
 
     if "capacity_factor" in df.columns:
         df["capacity_factor"] = pd.to_numeric(df["capacity_factor"], errors="coerce")
@@ -238,6 +266,7 @@ def add_calculated_columns(df: pd.DataFrame) -> pd.DataFrame:
     )
     df_model[list(LCOE_COLUMNS)] = df_model.apply(calculate_lcoe, axis=1)
     df_model["validation_status"] = df_model.apply(validate_project, axis=1)
+    df_model["outlier_type"] = df_model.apply(classify_outlier_type, axis=1)
     df_model["classification"] = df_model.apply(classify_project_quality, axis=1)
     return df_model
 
@@ -245,6 +274,8 @@ def add_calculated_columns(df: pd.DataFrame) -> pd.DataFrame:
 def load_and_analyse(csv_path: str | Path) -> pd.DataFrame:
     df = prepare_project_frame(read_project_csv(csv_path))
     mask = df["total_budget_EUR_2026"].notna() & df["installed_capacity_MW"].notna()
+    if "budget_verification_level" in df.columns:
+        mask = mask & df["budget_verification_level"].isin(ACCEPTED_BUDGET_VERIFICATION_LEVELS)
     df_model = add_calculated_columns(df.loc[mask])
     df_valid = df_model[df_model["LCOE_EUR_per_MWh"].notna()].copy()
     return apply_data_driven_classification(df_valid)

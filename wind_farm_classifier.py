@@ -11,6 +11,7 @@ import numpy as np
 import pandas as pd
 
 from src.lcoe.calculations import (
+    ACCEPTED_BUDGET_VERIFICATION_LEVELS,
     classify_new_project,
     classify_project_against_dataset,
     find_nearest_project,
@@ -29,6 +30,7 @@ from src.lcoe.constants import (
     OUTPUT_HISTORY_DIR,
 )
 from src.lcoe.utils import flatten_dict
+from src.lcoe.ml import build_capex_ml_report
 
 T = TypeVar("T")
 
@@ -189,13 +191,33 @@ def estimate_budget_from_dataset(
     if not math.isfinite(capacity) or capacity <= 0:
         raise ValueError("Installed capacity is required to estimate project budget.")
     candidates = df_valid.copy()
-    candidates["unit_budget_EUR_per_MW"] = (
-        pd.to_numeric(candidates["total_budget_EUR_2026"], errors="coerce")
-        / pd.to_numeric(candidates["installed_capacity_MW"], errors="coerce")
-    )
+    starting_candidate_count = len(candidates)
+    if "budget_EUR_per_MW" in candidates.columns:
+        candidates["unit_budget_EUR_per_MW"] = pd.to_numeric(
+            candidates["budget_EUR_per_MW"], errors="coerce"
+        )
+    else:
+        candidates["unit_budget_EUR_per_MW"] = (
+            pd.to_numeric(candidates["total_budget_EUR_2026"], errors="coerce")
+            / pd.to_numeric(candidates["installed_capacity_MW"], errors="coerce")
+        )
+    candidates["budget_confidence"] = pd.to_numeric(
+        candidates.get("budget_confidence", pd.Series(0.5, index=candidates.index)),
+        errors="coerce",
+    ).fillna(0.5)
+    if "budget_quality_status" in candidates.columns:
+        candidates = candidates[candidates["budget_quality_status"].eq("valid")].copy()
+    if "budget_verification_level" in candidates.columns:
+        candidates = candidates[
+            candidates["budget_verification_level"].isin(ACCEPTED_BUDGET_VERIFICATION_LEVELS)
+        ].copy()
     candidates = candidates[
         candidates["unit_budget_EUR_per_MW"].replace([np.inf, -np.inf], np.nan).notna()
     ].copy()
+    candidates = candidates[
+        candidates["unit_budget_EUR_per_MW"].between(500_000.0, 35_000_000.0)
+    ].copy()
+    invalid_candidate_count = starting_candidate_count - len(candidates)
 
     if candidates.empty:
         raise ValueError("Cannot estimate budget: dataset has no valid budget/capacity rows.")
@@ -235,12 +257,19 @@ def estimate_budget_from_dataset(
         )
         distances = np.linalg.norm(((x - means) / stds).to_numpy() - project_vector, axis=1)
         candidates["budget_estimate_distance"] = distances
-        reference = candidates.nsmallest(nearest_count, "budget_estimate_distance")
+        reference_pool = candidates.nsmallest(max(nearest_count * 3, nearest_count), "budget_estimate_distance")
     else:
-        reference = candidates.head(nearest_count)
+        candidates["budget_estimate_distance"] = 1.0
+        reference_pool = candidates.head(max(nearest_count * 3, nearest_count))
 
-    unit_budget = float(reference["unit_budget_EUR_per_MW"].median())
+    reference = trim_unit_budget_outliers(reference_pool).head(nearest_count)
+    unit_budget = weighted_median(
+        reference["unit_budget_EUR_per_MW"].to_numpy(dtype=float),
+        budget_reference_weights(reference).to_numpy(dtype=float),
+    )
     estimated_budget = unit_budget * capacity
+    confidence = budget_estimate_confidence(reference, project_is_floating)
+    budget_range = budget_estimate_range(reference, capacity)
     reference_projects = [
         str(name) for name in reference.get("wind_farm_name", pd.Series(dtype=str)).dropna().head(nearest_count)
     ]
@@ -249,8 +278,106 @@ def estimate_budget_from_dataset(
         "estimated_total_budget_EUR_2026": round(estimated_budget, 0),
         "unit_budget_EUR_per_MW": round(unit_budget, 2),
         "reference_projects": reference_projects,
-        "method": f"median EUR/MW from {len(reference)} nearest historic projects",
+        "reference_unit_budgets_EUR_per_MW": [
+            round(float(value), 2) for value in reference["unit_budget_EUR_per_MW"].tolist()
+        ],
+        "estimated_budget_range_EUR_2026": budget_range,
+        "confidence_score": confidence["score"],
+        "confidence_label": confidence["label"],
+        "confidence_reasons": confidence["reasons"],
+        "reference_verification_levels": [
+            str(value) for value in reference.get("budget_verification_level", pd.Series(dtype=str)).fillna("C").tolist()
+        ],
+        "excluded_invalid_candidate_count": int(invalid_candidate_count),
+        "method": f"weighted median EUR/MW from {len(reference)} validated nearest historic projects",
     }
+
+
+def trim_unit_budget_outliers(reference: pd.DataFrame) -> pd.DataFrame:
+    if len(reference) < 4:
+        return reference.copy()
+    units = pd.to_numeric(reference["unit_budget_EUR_per_MW"], errors="coerce")
+    low = float(units.quantile(0.10))
+    high = float(units.quantile(0.90))
+    trimmed = reference[units.between(low, high)].copy()
+    return trimmed if len(trimmed) >= 2 else reference.copy()
+
+
+def budget_reference_weights(reference: pd.DataFrame) -> pd.Series:
+    distances = pd.to_numeric(reference["budget_estimate_distance"], errors="coerce").fillna(1.0)
+    confidence = pd.to_numeric(reference["budget_confidence"], errors="coerce").fillna(0.5)
+    return confidence / (1.0 + distances)
+
+
+def budget_estimate_range(reference: pd.DataFrame, capacity_mw: float) -> dict[str, float | None]:
+    units = pd.to_numeric(reference["unit_budget_EUR_per_MW"], errors="coerce").dropna()
+    if units.empty:
+        return {"low": None, "high": None}
+    if len(units) == 1:
+        low = high = float(units.iloc[0])
+    else:
+        low = float(units.quantile(0.25))
+        high = float(units.quantile(0.75))
+    return {
+        "low": round(low * capacity_mw, 0),
+        "high": round(high * capacity_mw, 0),
+    }
+
+
+def budget_estimate_confidence(reference: pd.DataFrame, project_is_floating: bool) -> dict[str, Any]:
+    if reference.empty:
+        return {"score": 0.0, "label": "Low", "reasons": ["no validated reference projects"]}
+
+    count_score = min(1.0, len(reference) / 5.0)
+    levels = reference.get("budget_verification_level", pd.Series("C", index=reference.index)).fillna("C")
+    level_scores = levels.map({"A": 1.0, "B": 0.8, "C": 0.45, "D": 0.0}).fillna(0.45)
+    source_score = float(level_scores.mean())
+    distances = pd.to_numeric(reference.get("budget_estimate_distance", pd.Series(1.0, index=reference.index)), errors="coerce").fillna(1.0)
+    distance_score = float(1.0 / (1.0 + distances.median()))
+    units = pd.to_numeric(reference["unit_budget_EUR_per_MW"], errors="coerce").dropna()
+    if units.empty or float(units.median()) <= 0:
+        spread_score = 0.0
+    else:
+        spread_score = float(max(0.0, 1.0 - ((units.quantile(0.75) - units.quantile(0.25)) / units.median())))
+
+    same_foundation_share = 1.0
+    if "foundation_type" in reference.columns:
+        same_foundation_share = float(
+            (reference["foundation_type"].apply(_is_floating_value) == project_is_floating).mean()
+        )
+
+    score = 0.30 * source_score + 0.25 * count_score + 0.20 * distance_score + 0.15 * spread_score + 0.10 * same_foundation_share
+    if score >= 0.75:
+        label = "High"
+    elif score >= 0.55:
+        label = "Medium"
+    else:
+        label = "Low"
+
+    reasons = [
+        f"{len(reference)} validated neighbours",
+        f"source levels: {', '.join(str(level) for level in levels.tolist())}",
+        f"median normalized distance {float(distances.median()):.2f}",
+        f"EUR/MW spread score {spread_score:.2f}",
+    ]
+    if same_foundation_share >= 1.0:
+        reasons.append("foundation type matched")
+    else:
+        reasons.append(f"foundation match share {same_foundation_share:.0%}")
+    return {"score": round(score, 2), "label": label, "reasons": reasons}
+
+
+def weighted_median(values: np.ndarray, weights: np.ndarray) -> float:
+    mask = np.isfinite(values) & np.isfinite(weights) & (weights > 0)
+    if not mask.any():
+        return float(np.nanmedian(values))
+    values = values[mask]
+    weights = weights[mask]
+    order = np.argsort(values)
+    values = values[order]
+    weights = weights[order]
+    cutoff = weights.sum() / 2.0
+    return float(values[np.searchsorted(np.cumsum(weights), cutoff)])
 
 
 def add_estimated_budget(
@@ -260,14 +387,41 @@ def add_estimated_budget(
     estimate = estimate_budget_from_dataset(df_valid, project_data)
     project_data = project_data.copy()
     project_data["total_budget_EUR_2026"] = estimate["estimated_total_budget_EUR_2026"]
+    project_data["budget_EUR_per_MW"] = estimate["unit_budget_EUR_per_MW"]
+    project_data["budget_quality_status"] = "valid"
+    project_data["budget_quality_reason"] = "model estimate from validated reference projects"
+    project_data["budget_confidence"] = estimate["confidence_score"]
+    project_data["budget_source_type"] = "model_estimate"
+    project_data["budget_verification_level"] = "B" if estimate["confidence_label"] in {"High", "Medium"} else "C"
+    project_data["budget_verification_reason"] = "derived from A/B verified neighbour projects"
     project_data["budget_estimate"] = estimate
     return project_data
+
+
+def apply_estimate_quality_to_computed(
+    computed: dict[str, Any],
+    project_data: dict[str, Any],
+) -> dict[str, Any]:
+    computed = computed.copy()
+    for key in (
+        "budget_EUR_per_MW",
+        "budget_quality_status",
+        "budget_quality_reason",
+        "budget_confidence",
+        "budget_source_type",
+        "budget_verification_level",
+        "budget_verification_reason",
+    ):
+        if key in project_data:
+            computed[key] = project_data[key]
+    return computed
 
 
 def build_report(
     new_project_data: dict[str, Any],
     computed: dict[str, Any],
     nearest: pd.Series | None,
+    ml_report: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     budget_estimate = new_project_data.get("budget_estimate", {})
     return {
@@ -278,8 +432,22 @@ def build_report(
         },
         "budget_estimate": budget_estimate,
         "computed_metrics": {key: computed.get(key) for key in COMPUTED_METRIC_KEYS},
+        "data_quality": {
+            "budget_quality_status": computed.get("budget_quality_status"),
+            "budget_quality_reason": computed.get("budget_quality_reason"),
+            "budget_confidence": computed.get("budget_confidence"),
+            "budget_source_type": computed.get("budget_source_type"),
+            "budget_verification_level": computed.get("budget_verification_level"),
+            "budget_verification_reason": computed.get("budget_verification_reason"),
+            "budget_EUR_per_MW": computed.get("budget_EUR_per_MW"),
+        },
+        "ml_model": ml_report or {},
         "validation": {
             "status": computed.get("validation_status"),
+            "outlier_type": computed.get("outlier_type"),
+            "model_uncertainty": "Low budget confidence"
+            if budget_estimate.get("confidence_label") == "Low"
+            else None,
             "classification_algorithmic": computed.get("classification"),
             "nearest_project_name": nearest.get("wind_farm_name") if nearest is not None else None,
             "nearest_project_distance": nearest.get("similarity_distance")
@@ -373,7 +541,7 @@ def format_report_value(key: str, value: Any) -> str:
     if value is None:
         return "n/a"
     if isinstance(value, list):
-        return ", ".join(str(item) for item in value)
+        return format_report_list(field_name, value)
     if not isinstance(value, (int, float, np.integer, np.floating)):
         return str(value)
 
@@ -398,6 +566,93 @@ def format_report_value(key: str, value: Any) -> str:
     if field_name == "commissioning_year":
         return f"{numeric:.0f}"
     return f"{numeric:,.2f}"
+
+
+def format_report_list(field_name: str, value: list[Any]) -> str:
+    if not value:
+        return "n/a"
+    if not all(isinstance(item, dict) for item in value):
+        return ", ".join(str(item) for item in value)
+
+    if field_name in {"error_by_country", "error_by_foundation"}:
+        return "; ".join(
+            format_error_group(item)
+            for item in value
+            if isinstance(item, dict)
+        )
+    if field_name == "model_comparison":
+        return "; ".join(
+            format_model_comparison_row(item)
+            for item in value
+            if isinstance(item, dict)
+        )
+    if field_name == "feature_importance":
+        return "; ".join(
+            format_feature_importance_row(item)
+            for item in value
+            if isinstance(item, dict)
+        )
+    return "; ".join(", ".join(f"{key}: {format_compact_value(child)}" for key, child in item.items()) for item in value)
+
+
+def format_error_group(item: dict[str, Any]) -> str:
+    group = item.get("group", "unknown")
+    rows = item.get("rows")
+    mae = format_millions(item.get("MAE_EUR_per_MW"), suffix=" EUR/MW")
+    mape = format_percent(item.get("MAPE_percent"))
+    return f"{group}: MAE {mae}, MAPE {mape} (n={rows})"
+
+
+def format_model_comparison_row(item: dict[str, Any]) -> str:
+    model = str(item.get("model", "model")).replace("_", " ")
+    mae = format_millions(item.get("test_MAE_EUR_per_MW"), suffix=" EUR/MW")
+    mape = format_percent(item.get("test_MAPE_percent"))
+    r2 = format_compact_value(item.get("test_R2_log_target"))
+    cv = format_compact_value(item.get("cv_MAE_log_target"))
+    return f"{model}: MAE {mae}, MAPE {mape}, R2 {r2}, CV log-MAE {cv}"
+
+
+def format_feature_importance_row(item: dict[str, Any]) -> str:
+    feature = str(item.get("feature", "feature")).replace("_", " ")
+    importance = item.get("importance")
+    try:
+        pct = float(importance) * 100.0
+    except (TypeError, ValueError):
+        return f"{feature}: n/a"
+    return f"{feature}: {pct:.1f}%"
+
+
+def format_millions(value: Any, suffix: str = "") -> str:
+    try:
+        numeric = float(value)
+    except (TypeError, ValueError):
+        return "n/a"
+    if not math.isfinite(numeric):
+        return "n/a"
+    if abs(numeric) >= 1_000_000:
+        return f"{numeric / 1_000_000:.2f}M{suffix}"
+    return f"{numeric:,.0f}{suffix}"
+
+
+def format_percent(value: Any) -> str:
+    try:
+        numeric = float(value)
+    except (TypeError, ValueError):
+        return "n/a"
+    if not math.isfinite(numeric):
+        return "n/a"
+    return f"{numeric:.2f}%"
+
+
+def format_compact_value(value: Any) -> str:
+    if value is None:
+        return "n/a"
+    if isinstance(value, (int, float, np.integer, np.floating)):
+        numeric = float(value)
+        if not math.isfinite(numeric):
+            return "n/a"
+        return f"{numeric:.2f}"
+    return str(value)
 
 
 def print_report_table(report: dict[str, Any]) -> None:
@@ -473,9 +728,11 @@ def main() -> None:
     new_project_data = load_project_data(args.json)
     new_project_data = add_estimated_budget(new_project_data, df_valid)
     computed = classify_new_project(new_project_data)
+    computed = apply_estimate_quality_to_computed(computed, new_project_data)
     computed["classification"] = classify_project_against_dataset(computed, df_valid)
     nearest = find_nearest_or_none(df_valid, new_project_data)
-    report = round_report(build_report(new_project_data, computed, nearest))
+    ml_report = build_capex_ml_report(df_valid, new_project_data)
+    report = round_report(build_report(new_project_data, computed, nearest, ml_report))
     save_report(report)
     save_preview(report)
     print_report_table(report)

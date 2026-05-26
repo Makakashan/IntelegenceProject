@@ -10,6 +10,7 @@ from .lcoe.calculations import (
     classify_project_against_dataset,
     classify_percentile,
     classify_project_quality,
+    classify_outlier_type,
     estimate_capacity_factor,
     expected_lcoe_range,
     find_nearest_project,
@@ -18,3 +19,4 @@ from .lcoe.calculations import (
     prepare_project_frame,
     validate_project,
 )
+from .lcoe.ml import build_capex_ml_report

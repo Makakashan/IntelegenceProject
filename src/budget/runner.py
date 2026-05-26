@@ -20,6 +20,7 @@ from .parsing import (
     extract_year,
     parse_raw_to_target_eur,
 )
+from .quality import apply_budget_quality_columns, evaluate_budget_quality
 from .search import build_search_queries, get_snippets, serper_search
 
 ENRICHMENT_COLUMNS = (
@@ -30,6 +31,13 @@ ENRICHMENT_COLUMNS = (
     "fx_rate_to_eur",
     "inflation_factor",
     "total_budget_EUR_2026",
+    "budget_EUR_per_MW",
+    "budget_quality_status",
+    "budget_quality_reason",
+    "budget_confidence",
+    "budget_source_type",
+    "budget_verification_level",
+    "budget_verification_reason",
     "source",
     "lookup_date",
 )
@@ -37,6 +45,8 @@ ENRICHMENT_COLUMNS = (
 
 def lookup(
     farm_name: str,
+    capacity_mw: float | None,
+    is_floating: bool,
     api_key: str,
     request_delay: float,
     search_results: int,
@@ -53,22 +63,35 @@ def lookup(
         "fx_rate_to_eur": None,
         "inflation_factor": None,
         "total_budget_EUR_2026": None,
+        "budget_EUR_per_MW": None,
+        "budget_quality_status": "missing",
+        "budget_quality_reason": "not evaluated",
+        "budget_confidence": 0.0,
+        "budget_source_type": "internet_lookup",
+        "budget_verification_level": "D",
+        "budget_verification_reason": "not evaluated",
         "source": "",
         "lookup_date": date.today().isoformat(),
         "error": None,
     }
 
-    all_snippets: list[str] = []
-    all_sources: list[str] = []
+    selected_snippets: list[str] = []
+    selected_source = ""
+    raw = None
 
     for index, query in enumerate(build_search_queries(farm_name)):
         try:
             time.sleep(request_delay * index)
             data = serper_search(query, api_key, num=search_results, serper_url=serper_url)
-            snippets, sources = get_snippets(data)
-            all_snippets.extend(snippets)
-            all_sources.extend(sources)
-            if extract_budget(all_snippets):
+            snippets, sources = get_snippets(data, farm_name=farm_name)
+            for snippet, source in zip(snippets, sources, strict=False):
+                candidate_raw = extract_budget([snippet])
+                if candidate_raw:
+                    raw = candidate_raw
+                    selected_snippets = [snippet]
+                    selected_source = source
+                    break
+            if raw:
                 break
         except requests.HTTPError as exc:
             message = f"HTTP {exc.response.status_code}"
@@ -80,14 +103,13 @@ def lookup(
             result["error"] = str(exc)
             return result
 
-    raw = extract_budget(all_snippets)
     if not raw:
         log.info("%-40s  ?  not found", farm_name)
         result["total_budget_raw"] = "Not found"
         return result
 
     raw = clean_raw(raw)
-    budget_year = extract_year(all_snippets, target_year=target_year)
+    budget_year = extract_year(selected_snippets, target_year=target_year)
     currency = budget_currency(raw)
     fx = fx_rate_for_year(currency, budget_year, frankfurter_url)
     inflation = inflation_factor(budget_year, target_year, worldbank_url)
@@ -98,6 +120,13 @@ def lookup(
         frankfurter_url=frankfurter_url,
         worldbank_url=worldbank_url,
     )
+    quality = evaluate_budget_quality(
+        target_eur,
+        capacity_mw,
+        is_floating=is_floating,
+        source=selected_source,
+        source_type="internet_lookup",
+    )
 
     result.update(
         {
@@ -107,7 +136,14 @@ def lookup(
             "fx_rate_to_eur": round(fx, 5),
             "inflation_factor": round(inflation, 4),
             "total_budget_EUR_2026": target_eur,
-            "source": all_sources[0] if all_sources else "",
+            "budget_EUR_per_MW": quality.unit_eur_per_mw,
+            "budget_quality_status": quality.status,
+            "budget_quality_reason": quality.reason,
+            "budget_confidence": quality.confidence,
+            "budget_source_type": "internet_lookup",
+            "budget_verification_level": quality.verification_level,
+            "budget_verification_reason": quality.verification_reason,
+            "source": selected_source,
         }
     )
 
@@ -122,6 +158,11 @@ def lookup(
         target_eur,
     )
     return result
+
+
+def is_floating_foundation(value: object) -> bool:
+    text = str(value or "").lower()
+    return any(keyword in text for keyword in ("floating", "spar", "semi-submersible", "tlp"))
 
 
 def progress_bar(done: int, total: int) -> str:
@@ -156,6 +197,7 @@ def run(config: RuntimeConfig) -> None:
     farms = df["wind_farm_name"].dropna().unique().tolist()
     if not farms:
         raise ValueError("Column 'wind_farm_name' does not contain any non-empty values.")
+    farm_context = df.drop_duplicates("wind_farm_name").set_index("wind_farm_name", drop=False)
 
     log.info(
         "CSV: %s  |  unique farms: %d  |  workers: %d  |  target year: %d EUR",
@@ -173,6 +215,8 @@ def run(config: RuntimeConfig) -> None:
             pool.submit(
                 lookup,
                 farm,
+                farm_context.loc[farm].get("installed_capacity_MW"),
+                is_floating_foundation(farm_context.loc[farm].get("foundation_type")),
                 config.serper_api_key,
                 config.request_delay,
                 config.search_results,
@@ -199,13 +243,14 @@ def run(config: RuntimeConfig) -> None:
         df = df.drop(columns=drop_cols)
 
     df = df.merge(results_df, on="wind_farm_name", how="left")
+    df = apply_budget_quality_columns(df, target_year=config.target_year, replace_total_budget=True)
     out_csv, out_json = output_paths(config.input_path, config.output_dir, config.target_year)
 
     df.to_csv(out_csv, index=False, encoding="utf-8-sig")
     with open(out_json, "w", encoding="utf-8") as file:
         json.dump(list(budget_map.values()), file, ensure_ascii=False, indent=2, default=str)
 
-    found = sum(1 for result in budget_map.values() if result.get("total_budget_EUR_2026"))
+    found = int(pd.to_numeric(df["total_budget_EUR_2026"], errors="coerce").notna().sum())
     not_found = len(farms) - found
 
     print()

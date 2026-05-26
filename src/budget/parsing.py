@@ -7,17 +7,17 @@ from .finance import SYMBOL_TO_ISO, fx_rate_for_year, inflation_factor
 
 BUDGET_PATTERNS = [
     r"(?:total\s+(?:investment|budget|cost|capex|project\s+cost|project\s+value)[^\n]{0,80}?)"
-    r"((?:£|€|\$|GBP|EUR|USD|DKK|NOK|DKr|SEK)\s*[\d,\.]+(?:\s*[\–\-]\s*[\d,\.]+)?\s*(?:billion|million|bn|mn|B\b|M\b))",
-    r"((?:£|€|\$|GBP|EUR|USD|DKK|NOK|DKr|SEK)\s*[\d,\.]+(?:\s*[\–\-]\s*[\d,\.]+)?\s*(?:billion|million|bn|mn|B\b|M\b)"
+    r"((?:£|€|\$|GBP|EUR|USD|DKK|NOK|DKr|SEK|PLN|zł|zl)\s*[\d,\.]+(?:\s*[\–\-]\s*[\d,\.]+)?\s*(?:billion|million|bn|mn|B\b|M\b))",
+    r"((?:£|€|\$|GBP|EUR|USD|DKK|NOK|DKr|SEK|PLN|zł|zl)\s*[\d,\.]+(?:\s*[\–\-]\s*[\d,\.]+)?\s*(?:billion|million|bn|mn|B\b|M\b)"
     r"[^\n]{0,50}?(?:investment|budget|cost|capex|project))",
-    r"((?:£|€|\$|DKr|DKK|NOK|SEK)\s*[\d,\.]+(?:\s*[\–\-]\s*[\d,\.]+)?\s*(?:billion|million|bn|mn|B\b|M\b))",
+    r"((?:£|€|\$|DKr|DKK|NOK|SEK|PLN|zł|zl)\s*[\d,\.]+(?:\s*[\–\-]\s*[\d,\.]+)?\s*(?:billion|million|bn|mn|B\b|M\b))",
 ]
 
 YEAR_PATTERN = re.compile(r"\b(20\d{2})\b")
-SYMBOL_PATTERN = re.compile(r"(£|€|\$|GBP|EUR|USD|DKK|NOK|DKr|SEK)")
+SYMBOL_PATTERN = re.compile(r"(£|€|\$|GBP|EUR|USD|DKK|NOK|DKr|SEK|PLN|zł|zl)")
 UNIT_PATTERN = re.compile(r"billion|million|bn|mn|(?<=\d)[bm]", re.I)
 CLEAN_RAW_PATTERN = re.compile(
-    r"(?:£|€|\$|GBP|EUR|USD|DKK|NOK|DKr|SEK)\s*"
+    r"(?:£|€|\$|GBP|EUR|USD|DKK|NOK|DKr|SEK|PLN|zł|zl)\s*"
     r"[\d,\.]+(?:\s*[-–]\s*[\d,\.]+)?\s*"
     r"(?:billion|million|bn|mn|[bBmM])\b",
     re.IGNORECASE,

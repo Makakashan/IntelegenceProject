@@ -20,6 +20,9 @@ SYMBOL_TO_ISO = {
     "NOK": "NOK",
     "SEK": "SEK",
     "DKr": "DKK",
+    "PLN": "PLN",
+    "zł": "PLN",
+    "zl": "PLN",
 }
 
 FX_FALLBACK: dict[str, dict[int, float]] = {
@@ -99,7 +102,65 @@ FX_FALLBACK: dict[str, dict[int, float]] = {
         2025: 0.087,
         2026: 0.086,
     },
+    "SEK": {
+        2010: 0.105,
+        2011: 0.111,
+        2012: 0.115,
+        2013: 0.116,
+        2014: 0.110,
+        2015: 0.107,
+        2016: 0.106,
+        2017: 0.104,
+        2018: 0.097,
+        2019: 0.094,
+        2020: 0.095,
+        2021: 0.099,
+        2022: 0.095,
+        2023: 0.087,
+        2024: 0.088,
+        2025: 0.087,
+        2026: 0.089,
+    },
     "EUR": {year: 1.0 for year in range(2000, 2027)},
+    "PLN": {
+        2010: 0.25,
+        2011: 0.24,
+        2012: 0.24,
+        2013: 0.24,
+        2014: 0.24,
+        2015: 0.24,
+        2016: 0.23,
+        2017: 0.24,
+        2018: 0.23,
+        2019: 0.23,
+        2020: 0.23,
+        2021: 0.22,
+        2022: 0.21,
+        2023: 0.22,
+        2024: 0.23,
+        2025: 0.23,
+        2026: 0.23,
+    },
+}
+
+EUROZONE_CPI_FALLBACK: dict[int, float] = {
+    2010: 100.0,
+    2011: 102.7,
+    2012: 105.2,
+    2013: 106.7,
+    2014: 107.1,
+    2015: 107.2,
+    2016: 107.3,
+    2017: 109.1,
+    2018: 111.0,
+    2019: 112.1,
+    2020: 112.3,
+    2021: 114.8,
+    2022: 122.8,
+    2023: 130.2,
+    2024: 133.5,
+    2025: 136.0,
+    2026: 138.5,
 }
 
 
@@ -189,25 +250,20 @@ def load_eurozone_cpi(worldbank_url: str = DEFAULT_WORLDBANK_URL) -> dict[int, f
             log.warning("World Bank CPI %s: %s", country, exc)
 
     log.warning("World Bank CPI unavailable - using built-in fallback")
-    return {
-        2010: 100.0,
-        2011: 102.7,
-        2012: 105.2,
-        2013: 106.7,
-        2014: 107.1,
-        2015: 107.2,
-        2016: 107.3,
-        2017: 109.1,
-        2018: 111.0,
-        2019: 112.1,
-        2020: 112.3,
-        2021: 114.8,
-        2022: 122.8,
-        2023: 130.2,
-        2024: 133.5,
-        2025: 136.0,
-        2026: 138.5,
-    }
+    return EUROZONE_CPI_FALLBACK.copy()
+
+
+def cpi_value_for_year(cpi: dict[int, float], year: int) -> float | None:
+    if year in cpi:
+        return cpi[year]
+    if year in EUROZONE_CPI_FALLBACK:
+        fallback_value = EUROZONE_CPI_FALLBACK[year]
+        log.debug("CPI %d -> %.2f (built-in fallback/projection)", year, fallback_value)
+        return fallback_value
+    if not cpi:
+        return None
+    nearest_year = min(cpi.keys(), key=lambda candidate: abs(candidate - year))
+    return cpi.get(nearest_year)
 
 
 def inflation_factor(
@@ -219,9 +275,8 @@ def inflation_factor(
     if from_year == to_year:
         return 1.0
 
-    max_year = max(cpi)
-    cpi_from = cpi.get(from_year) or cpi.get(min(cpi.keys(), key=lambda year: abs(year - from_year)))
-    cpi_to = cpi.get(to_year) or cpi.get(max_year)
+    cpi_from = cpi_value_for_year(cpi, from_year)
+    cpi_to = cpi_value_for_year(cpi, to_year)
     if not cpi_from or not cpi_to:
         return 1.0
     return cpi_to / cpi_from
